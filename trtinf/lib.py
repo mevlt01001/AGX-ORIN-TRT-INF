@@ -4,32 +4,33 @@ import numpy
 import pycuda.driver as cuda
 import pycuda.autoinit, cv2
 import matplotlib.pyplot as plt
+import pyrealsense2 as rs
 
 classes = {
-    0: 'Body',
-    1: 'Adult',
-    2: 'Child',
-    3: 'Male',
-    4: 'Female',
-    5: 'Body_with_Wheelchair',
-    6: 'Body_with_Crutches',
-    7: 'Head',
-    8: 'Front',
-    9: 'Right_Front',
-    10: 'Right_Side',
-    11: 'Right_Back',
-    12: 'Back',
-    13: 'Left_Back',
-    14: 'Left_Side',
-    15: 'Left_Front',
-    16: 'Face',
-    17: 'Eye',
-    18: 'Nose',
-    19: 'Mouth',
-    20: 'Ear',
-    21: 'Hand',
-    22: 'Hand_Left',
-    23: 'Hand_Right',
+    # 0: 'Body',
+    # 1: 'Adult',
+    # 2: 'Child',
+    3: 'Body(M)',
+    4: 'Body(F)',
+    # 5: 'Body_with_Wheelchair',
+    # 6: 'Body_with_Crutches',
+    # 7: 'Head',
+    8: 'Head(Front)',
+    9: 'Head(RFront)',
+    10: 'Head(RSide)',
+    11: 'Head(RBack)',
+    12: 'Head(Back)',
+    13: 'Head(LBack)',
+    14: 'Head(LSide)',
+    15: 'Head(LFront)',
+    16: '',#Face
+    17: '',#Eye
+    18: '',#Nose
+    19: '',#Mouth
+    20: '',#Ear
+    # 21: 'Hand',
+    22: 'Hand(L)',
+    23: 'Hand(R)',
     24: 'Foot'  
 }
 
@@ -47,14 +48,13 @@ class TRT_INF:
         self.__LOGGER, self.__RUNTIME, self.__ENGINE = self.__load_engine()
         self.__input_buffers, self.__output_buffers = self.__allocate_buffers(outShape=(100,7))
         self.__context, self.__stream = self.__create_execution_context()
-        cap = cv2.VideoCapture(0)
-        img = self.__get_img("test_imgs/273271-2b427000e2a2b025_jpg.rf.7d933851f233dcd09cf166e310a4b407.jpg")
-        print(f"{'[INFO][TRT_INF:__init__]':.<40}: IMG SHAPE: {img.shape}")
-        data = self.__preprocess(img)
-        self.__inference(data)
-        bboxes, classes = self.__postprocess(img)
-        self.__draw_boxes(img, bboxes, classes)
+        # img = self.__get_img("test_imgs/273271-2b427000e2a2b025_jpg.rf.7d933851f233dcd09cf166e310a4b407.jpg")
+        # data = self.__preprocess(img)
+        # self.__inference(data)
+        # bboxes, classes = self.__postprocess(img)
+        # self.__draw_boxes(img, bboxes, classes)
         
+        self.__run_realsense()
 
     def __load_engine(self):
         if not os.path.exists(self.engine_path): print(f"{'[ERROR][TRT_INF:__load_engine]':.<40}:The path '{self.engine_path}' does not exist"), exit(1)
@@ -155,34 +155,53 @@ class TRT_INF:
     
     def __postprocess(self, img: numpy.ndarray):
         output = numpy.trim_zeros(self.__output_buffers[0].cpu_buffer, "b").reshape(-1, 7)
+        output = output[numpy.isin(output[:, 1], list(classes.keys()))]
+        scores = output[:, 2]
+        mask = scores > 0.3
+        output = output[mask]
         print(f"{'[INFO][TRT_INF:__postprocess]':.<40}: Output shape: {output.shape}")
-        bboxes = (output[..., 3:].astype(numpy.int32)).tolist()
-        conf = output[..., 2].astype(numpy.float32).tolist()
-        class_ids = (output[..., 1].astype(numpy.int32)).tolist()
+        bboxes = output[:, 3:7].astype(int)
+        _classes = output[:, 1].astype(int)
+        return bboxes, _classes
 
-        print(f"{'[INFO][TRT_INF:__postprocess]':.<40}: Postprocess done")
-        return bboxes, class_ids
-    
-    def __get_box_and_class(self, boxes: list, class_ids: list, scores: list):
-        pass
-        
-    def __run(self, img: numpy.ndarray):
-        img = self.__preprocess(img)
-        self.__inference(img)
-        output = self.__postprocess(img)
-        return output
+    def __run_realsense(self):
+        pipeline = rs.pipeline()
+        config = rs.config()
+        config.enable_stream(rs.stream.color, 640, 640, rs.format.bgr8, 30)
+        pipeline.start(config)
+
+        while True:
+            frames = pipeline.wait_for_frames()
+            color_frame = frames.get_color_frame()
+            if not color_frame: continue
+            img = numpy.asanyarray(color_frame.get_data())
+            data = self.__preprocess(img)
+            self.__inference(data)
+            bboxes, classes = self.__postprocess(img)
+
+            for i, box in enumerate(bboxes):
+                x1, y1, x2, y2 = box
+                cv2.rectangle(img, (x1, y1), (x2, y2), (0, 0, 255), 2)
+                cv2.putText(img, classes[classes[i]], (x1, y1), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 0, 0), 2)
+            cv2.imshow("Image", img)
+            key = cv2.waitKey(1)
+            if key & 0xFF == ord('q'):
+                break
+        pipeline.stop()
+        cv2.destroyAllWindows()
     
     def __draw_boxes(self, img: numpy.ndarray, boxes: list, class_ids: list = None):
         print(f"{'[INFO][TRT_INF:__draw_boxes]':.<40}: num boxes: {len(boxes)}")
         for i,box in enumerate(boxes):
             x1, y1, x2, y2 = box
-            cv2.rectangle(img, (x1, y1), (x2, y2), (0, 0, 255), 1)
+            cv2.rectangle(img, (x1, y1), (x2, y2), (0, 0, 255), 2)
             if class_ids is not None:
-                cv2.putText(img, str(class_ids[i]), (x1, y1), cv2.FONT_HERSHEY_SIMPLEX, .8, (255, 0, 0), 1)
+                cv2.putText(img, classes[class_ids[i]], (x1, y1), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 0, 0), 2)
 
         cv2.imshow("Image", img)
         cv2.waitKey(0)
         cv2.destroyAllWindows()
+        
 
 if __name__ == "__main__":
     inf = TRT_INF("EngineFolder/yolov9_s_wholebody25_post_0100_1x3x640x640.engine")
