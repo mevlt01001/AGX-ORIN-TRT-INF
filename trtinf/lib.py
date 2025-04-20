@@ -11,34 +11,38 @@ classes = {
     # 0: 'Body',
     # 1: 'Adult',
     # 2: 'Child',
-    3: 'Body(M)',
-    4: 'Body(F)',
+    3: ('Body(M)', (0, 0, 255)),
+    4: ('Body(F)', (255, 0, 255)),
     # 5: 'Body_with_Wheelchair',
     # 6: 'Body_with_Crutches',
     # 7: 'Head',
-    8: 'Head(F)',
-    9: 'Head(RF)',
-    10: 'Head(R)',
-    11: 'Head(RB)',
-    12: 'Head(B)',
-    13: 'Head(LB)',
-    14: 'Head(L)',
-    15: 'Head(LF)',
-    16: '',#Face
-    17: '',#Eye
-    18: '',#Nose
-    19: '',#Mouth
-    20: '',#Ear
+    8: ('Head(F)', (0, 255, 0)),
+    9: ('Head(RF)', (0, 255, 0)),
+    10: ('Head(R)', (0, 255, 0)),
+    11: ('Head(RB)', (0, 255, 0)),
+    12: ('Head(B)', (0, 255, 0)),
+    13: ('Head(LB)', (0, 255, 0)),
+    14: ('Head(L)', (0, 255, 0)),
+    15: ('Head(LF)', (0, 255, 0)),
+    16: ('', (120,120,120)),#Face
+    17: ('', (20,120,240)),#Eye
+    18: ('',(190, 200,70)),#Nose
+    19: ('', (250, 20,120)),#Mouth
+    20: ('', (200,255,170)),#Ear
     # 21: 'Hand',
-    22: 'Hand(L)',
-    23: 'Hand(R)',
-    24: 'Foot'  
+    22: ('Hand(L)', (0, 255, 0)),
+    23: ('Hand(R)', (0, 255, 0)),
+    24: ('Foot', (0, 255, 0)),
 }
 
 class Tensor_CPU_GPU_Buffers:
-    def __init__(self, name, cpu_buffer, gpu_buffer):
+    def __init__(self, name, cpu_buffer, gpu_buffer, size, dtype, mode, shape):
         
         self.name = name
+        self.shape = shape
+        self.size = size
+        self.dtype = dtype
+        self.mode = mode
         self.cpu_buffer = cpu_buffer
         self.gpu_buffer = gpu_buffer
 
@@ -97,7 +101,7 @@ class TRT_INF:
             cpu_buffer = cuda.pagelocked_empty(tensor_size, tensor_dtype)
             gpu_buffer = cuda.mem_alloc(cpu_buffer.nbytes)
 
-            buffer = Tensor_CPU_GPU_Buffers(tensor_name, cpu_buffer, gpu_buffer)
+            buffer = Tensor_CPU_GPU_Buffers(tensor_name, cpu_buffer, gpu_buffer, tensor_size, tensor_dtype, tensor_mode, tensor_shape)
 
 
             info = f"""
@@ -154,6 +158,7 @@ class TRT_INF:
         cuda.memcpy_htod_async(self.__input_buffers[0].gpu_buffer, self.__input_buffers[0].cpu_buffer, self.__stream)
         self.__context.execute_async_v3(self.__stream.handle)
         cuda.memcpy_dtoh_async(self.__output_buffers[0].cpu_buffer, self.__output_buffers[0].gpu_buffer, self.__stream)
+        cuda.memset_d32(self.__output_buffers[0].gpu_buffer, 0, self.__output_buffers[0].size)
         # self.__stream.synchronize()
         # print(f"{'[INFO][TRT_INF:__inference]':.<40}: Inference done")
     
@@ -199,13 +204,13 @@ class TRT_INF:
             for i, box in enumerate(bboxes):
                 x1, y1, x2, y2 = box
                 # print(f"{'[INFO][TRT_INF:__run_web_camera]':.<40}: {i}: {box}, {_classes[i]}")
-                cv2.rectangle(img, (x1, y1), (x2, y2), (0, 0, 255), 2)
-                if _classes[i] in [3,4]:
-                    cv2.putText(img, classes[_classes[i]], (int(x1+(x2-x1)/2-35), int(y1-40)), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2)
+                cv2.rectangle(img, (x1, y1), (x2, y2), classes[_classes[i]][1], 2)
+                if _classes[i] in [3, 4]:
+                    cv2.putText(img, classes[_classes[i]][0], (int(x1+(x2-x1)/2), int(y1-40)), cv2.FONT_HERSHEY_SIMPLEX, 0.8, classes[_classes[i]][1], 2)
                     continue
-                cv2.putText(img, classes[_classes[i]], (x1, y1), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2)
+                cv2.putText(img, classes[_classes[i]][0], (x1, y1), cv2.FONT_HERSHEY_SIMPLEX, 0.8, classes[_classes[i]][1], 2)
     
-            cv2.putText(img, f"FPS: {int(fps)}", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2)
+            cv2.putText(img, f"FPS: {int(fps)}", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255,255,255), 2)
             cv2.imshow("Image", img)
             end = time.time()
             fps = 1 / (end - start)
