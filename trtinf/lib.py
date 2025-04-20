@@ -3,8 +3,9 @@ import tensorrt
 import numpy
 import pycuda.driver as cuda
 import pycuda.autoinit, cv2
-import matplotlib.pyplot as plt
-import pyrealsense2 as rs
+# import matplotlib.pyplot as plt
+#import pyrealsense2 as rs
+import time
 
 classes = {
     # 0: 'Body',
@@ -15,14 +16,14 @@ classes = {
     # 5: 'Body_with_Wheelchair',
     # 6: 'Body_with_Crutches',
     # 7: 'Head',
-    8: 'Head(Front)',
-    9: 'Head(RFront)',
-    10: 'Head(RSide)',
-    11: 'Head(RBack)',
-    12: 'Head(Back)',
-    13: 'Head(LBack)',
-    14: 'Head(LSide)',
-    15: 'Head(LFront)',
+    8: 'Head(F)',
+    9: 'Head(RF)',
+    10: 'Head(R)',
+    11: 'Head(RB)',
+    12: 'Head(B)',
+    13: 'Head(LB)',
+    14: 'Head(L)',
+    15: 'Head(LF)',
     16: '',#Face
     17: '',#Eye
     18: '',#Nose
@@ -46,15 +47,18 @@ class TRT_INF:
         
         self.engine_path = engine_path
         self.__LOGGER, self.__RUNTIME, self.__ENGINE = self.__load_engine()
-        self.__input_buffers, self.__output_buffers = self.__allocate_buffers(outShape=(100,7))
+        self.__input_buffers, self.__output_buffers = self.__allocate_buffers(outShape=(1000,7))
         self.__context, self.__stream = self.__create_execution_context()
-        # img = self.__get_img("test_imgs/273271-2b427000e2a2b025_jpg.rf.7d933851f233dcd09cf166e310a4b407.jpg")
+
+        # cap = cv2.VideoCapture(0)
+        # img = self.__get_img("test_imgs/273271-1ba93000e00e011c_jpg.rf.b86e6597a572425a278b60a8863e0227.jpg")
         # data = self.__preprocess(img)
         # self.__inference(data)
         # bboxes, classes = self.__postprocess(img)
         # self.__draw_boxes(img, bboxes, classes)
         
-        self.__run_realsense()
+        self.__run_web_camera()
+        # self.__run_realsense()
 
     def __load_engine(self):
         if not os.path.exists(self.engine_path): print(f"{'[ERROR][TRT_INF:__load_engine]':.<40}:The path '{self.engine_path}' does not exist"), exit(1)
@@ -122,7 +126,7 @@ class TRT_INF:
     
     def __get_img(self, cap=None):
         if not isinstance(cap, cv2.VideoCapture):
-            return self.__get_img_from_file("test_imgs/273271-1ba93000e00e011c_jpg.rf.b86e6597a572425a278b60a8863e0227.jpg")
+            return self.__get_img_from_file(cap)
         ret, img = cap.read()
         if not ret:
             print(f"{'[ERROR][TRT_INF:__get_img]':.<40}: Failed to read image")
@@ -141,28 +145,80 @@ class TRT_INF:
     def __preprocess(self, img: numpy.ndarray):
         img = numpy.transpose(img, (2, 0, 1))
         img = numpy.expand_dims(img, axis=0)
-        print(f"{'[INFO][TRT_INF:__preprocess]':.<40}: Preprocess done")
-        return numpy.ascontiguousarray(img, dtype=numpy.float32)
+        # print(f"{'[INFO][TRT_INF:__preprocess]':.<40}: Preprocess done")
+        return img
     
     def __inference(self, data: numpy.ndarray):
         numpy.copyto(self.__input_buffers[0].cpu_buffer, data.ravel())
-        print(f"{'[INFO][TRT_INF:__inference]':.<40}: Data coppied to input buffer: {self.__input_buffers[0].cpu_buffer.base.get_device_pointer()}")
+        # print(f"{'[INFO][TRT_INF:__inference]':.<40}: Data coppied to input buffer: {self.__input_buffers[0].cpu_buffer.base.get_device_pointer()}")
         cuda.memcpy_htod_async(self.__input_buffers[0].gpu_buffer, self.__input_buffers[0].cpu_buffer, self.__stream)
         self.__context.execute_async_v3(self.__stream.handle)
         cuda.memcpy_dtoh_async(self.__output_buffers[0].cpu_buffer, self.__output_buffers[0].gpu_buffer, self.__stream)
         # self.__stream.synchronize()
-        print(f"{'[INFO][TRT_INF:__inference]':.<40}: Inference done")
+        # print(f"{'[INFO][TRT_INF:__inference]':.<40}: Inference done")
     
-    def __postprocess(self, img: numpy.ndarray):
+    def __postprocess(self, img: numpy.ndarray, width_ratio: float = 1.0, height_ratio: float = 1.0):
         output = numpy.trim_zeros(self.__output_buffers[0].cpu_buffer, "b").reshape(-1, 7)
         output = output[numpy.isin(output[:, 1], list(classes.keys()))]
         scores = output[:, 2]
-        mask = scores > 0.3
+        mask = scores > 0.4
         output = output[mask]
-        print(f"{'[INFO][TRT_INF:__postprocess]':.<40}: Output shape: {output.shape}")
-        bboxes = output[:, 3:7].astype(int)
+        # print(f"{'[INFO][TRT_INF:__postprocess]':.<40}: Output shape: {output.shape}")
+        
+        bboxes = output[:, 3:]
+        bboxes[:, 0] = bboxes[:, 0] * width_ratio
+        bboxes[:, 1] = bboxes[:, 1] * height_ratio
+        bboxes[:, 2] = bboxes[:, 2] * width_ratio
+        bboxes[:, 3] = bboxes[:, 3] * height_ratio
+        bboxes = bboxes.astype(int)
         _classes = output[:, 1].astype(int)
         return bboxes, _classes
+
+    def __run_web_camera(self):
+        cap = cv2.VideoCapture("v4l2src device=/dev/video0 ! image/jpeg,format=MJPG ! nvv4l2decoder mjpeg=1 ! nvvidconv ! video/x-raw,format=BGRx ! videoconvert ! video/x-raw,format=BGR ! appsink drop=1", cv2.CAP_GSTREAMER)
+        if not cap.isOpened():
+            # print(f"{'[ERROR][TRT_INF:__run_web_camera]':.<40}: Failed to open camera")
+            exit(1)
+
+        w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+        h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        print(f"{'[INFO][TRT_INF:__run_web_camera]':.<40}: Camera resolution: {w}x{h}")
+        w_ratio = w / 640
+        h_ratio = h / 640
+        print(f"{'[INFO][TRT_INF:__run_web_camera]':.<40}: Width ratio: {w_ratio}, Height ratio: {h_ratio}")
+        key = True
+        cnt = 0
+        fps = 0
+        while key:
+            start = time.time()
+            key, img = cap.read()
+            data = cv2.resize(img, (640, 640))
+            data = self.__preprocess(data)
+            self.__inference(data)
+            bboxes, _classes = self.__postprocess(img, w_ratio, h_ratio)
+            for i, box in enumerate(bboxes):
+                x1, y1, x2, y2 = box
+                # print(f"{'[INFO][TRT_INF:__run_web_camera]':.<40}: {i}: {box}, {_classes[i]}")
+                cv2.rectangle(img, (x1, y1), (x2, y2), (0, 0, 255), 2)
+                if _classes[i] in [3,4]:
+                    cv2.putText(img, classes[_classes[i]], (int(x1+(x2-x1)/2-35), int(y1-40)), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2)
+                    continue
+                cv2.putText(img, classes[_classes[i]], (x1, y1), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2)
+    
+            cv2.putText(img, f"FPS: {int(fps)}", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2)
+            cv2.imshow("Image", img)
+            end = time.time()
+            fps = 1 / (end - start)
+
+            key = cv2.waitKey(1)
+            if key & 0xFF == ord('q'):
+                cv2.imwrite(f"output_{cnt}.jpg", img)
+                cnt += 1
+                print(f"{'[INFO][TRT_INF:__run_web_camera]':.<40}: Image saved as output.jpg")
+                # break
+        cap.release()
+        cv2.destroyAllWindows()
+    
 
     def __run_realsense(self):
         pipeline = rs.pipeline()
@@ -192,12 +248,15 @@ class TRT_INF:
     
     def __draw_boxes(self, img: numpy.ndarray, boxes: list, class_ids: list = None):
         print(f"{'[INFO][TRT_INF:__draw_boxes]':.<40}: num boxes: {len(boxes)}")
-        for i,box in enumerate(boxes):
+        for i, box in enumerate(boxes):
             x1, y1, x2, y2 = box
-            cv2.rectangle(img, (x1, y1), (x2, y2), (0, 0, 255), 2)
-            if class_ids is not None:
-                cv2.putText(img, classes[class_ids[i]], (x1, y1), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 0, 0), 2)
-
+            # print(f"{'[INFO][TRT_INF:__run_web_camera]':.<40}: {i}: {box}, {_classes[i]}")
+            cv2.rectangle(img, (x1, y1), (x2, y2), (0, 255, 0), 2)
+            if class_ids[i] in [3,4]:
+                cv2.putText(img, classes[class_ids[i]], (int(x1+(x2-x1)/2), int(y1-40)), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 255), 2)
+                continue
+            cv2.putText(img, classes[class_ids[i]], (x1, y1), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 0, 0), 2)
+        cv2.imwrite("output.jpg", img)
         cv2.imshow("Image", img)
         cv2.waitKey(0)
         cv2.destroyAllWindows()
