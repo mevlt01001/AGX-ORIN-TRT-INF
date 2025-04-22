@@ -28,7 +28,7 @@ with open(MODEL_PATH, "rb") as model:
         exit(1)
 
 PROFILE = BUILDER.create_optimization_profile()
-PROFILE.set_shape(NETWORK.get_input(0).name, (1, 3, 'H', 'W'), (1, 3, 'H', 'W'), (1, 3, 'H', 'W'))
+PROFILE.set_shape(NETWORK.get_input(0).name, (1, 3, 720, 1280), (1, 3, 720, 1280), (1, 3, 720, 1280))
 
 CONFIG = BUILDER.create_builder_config()
 CONFIG.profiling_verbosity = tensorrt.ProfilingVerbosity.DETAILED

@@ -162,7 +162,7 @@ class TRT_INF:
         output = numpy.trim_zeros(self.__output_buffers[0].cpu_buffer, "b").reshape(-1, 7)
         output = output[numpy.isin(output[:, 1], list(classes.keys()))]
         scores = output[:, 2]
-        mask = scores > 0.3
+        mask = scores > 0.5
         output = output[mask]
         
         bboxes = output[:, 3:]
@@ -176,12 +176,12 @@ class TRT_INF:
 
     def run_web_camera(self):
         scale_f = 1
-        w = 640*scale_f
-        h = 480*scale_f
-        w_ratio, h_ratio = w / 640, h / 640
+        w = 1280*scale_f
+        h = 720*scale_f
+        w_ratio, h_ratio = w / 1280, h / 736
 
         camera = CameraBuffer()
-        camera.cap.set(cv2.CAP_PROP_FPS, 60)
+        camera.cap.set(cv2.CAP_PROP_FPS, 30)
         camera.cap.set(cv2.CAP_PROP_FRAME_WIDTH, w/scale_f)
         camera.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, h/scale_f)
         camera.thread.start()
@@ -250,6 +250,6 @@ class TRT_INF:
         
 
 if __name__ == "__main__":
-    inf = TRT_INF("EngineFolder/yolov9_s_wholebody25_post_0100_1x3x640x640.engine")
+    inf = TRT_INF("EngineFolder/yolov9_s_wholebody25_post_0100_1x3x736x1280.engine")
     inf.run_web_camera()
 
