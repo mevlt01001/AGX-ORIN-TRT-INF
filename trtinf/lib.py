@@ -7,37 +7,32 @@ import pycuda.autoinit, cv2
 #import pyrealsense2 as rs
 import time
 import threading
-import queue
+from collections import deque
 
 class CameraBuffer:
-    def __init__(self, pipeline, maxsize=20):
-        self.cap = cv2.VideoCapture(pipeline, cv2.CAP_GSTREAMER)
+    def __init__(self, maxsize=20):
+        self.cap = cv2.VideoCapture(4)
         if not self.cap.isOpened():
             raise RuntimeError("Kamera açılamadı.")
-        self.queue = queue.Queue(maxsize=maxsize)
+        self.queue = deque(maxlen=maxsize)
+        self.lock = threading.Lock()
         self.running = True
-        self.thread = threading.Thread(target=self._reader, daemon=True)
-        self.thread.start()
+        self.thread = threading.Thread(target=self._reader, daemon=False)
 
     def _reader(self):
         while self.running:
-            ret, frame = self.cap.read()
-            if not ret:
-                continue
-            try:
-                self.queue.put_nowait(frame)
-            except queue.Full:
-                pass  # eski frame'i at, yeni çekmeye devam et
-
+            success, frame = self.cap.read()
+            if success:
+                with self.lock:
+                    self.queue.append(frame)
+                    print(f"{'[INFO][CameraBuffer:_reader]':.<40}: queeue size: {len(self.queue)}")
+            
     def get(self):
-        try:
-            return self.queue.get(timeout=0.01)  # 10ms içinde yoksa None döner
-        except queue.Empty:
-            return None
-
-    def stop(self):
-        self.running = False
-        self.cap.release()
+        with self.lock:
+            if len(self.queue) > 0:
+                return self.queue.pop()
+            else:
+                return None
 
 
 classes = {
@@ -150,6 +145,7 @@ class TRT_INF:
         return context, cuda.Stream()
 
     def __preprocess(self, img: numpy.ndarray):
+        # shape is (H, W, 3)
         img = numpy.transpose(img, (2, 0, 1))
         img = numpy.expand_dims(img, axis=0)
         return img
@@ -166,7 +162,7 @@ class TRT_INF:
         output = numpy.trim_zeros(self.__output_buffers[0].cpu_buffer, "b").reshape(-1, 7)
         output = output[numpy.isin(output[:, 1], list(classes.keys()))]
         scores = output[:, 2]
-        mask = scores > 0.4
+        mask = scores > 0.3
         output = output[mask]
         
         bboxes = output[:, 3:]
@@ -179,110 +175,77 @@ class TRT_INF:
         return bboxes, _classes
 
     def run_web_camera(self):
-        gst = (
-            "v4l2src device=/dev/video0 ! "
-            "image/jpeg, width=1280, height=720, framerate=30/1 ! "
-            "jpegdec ! "
-            "videoconvert ! "
-            "video/x-raw, format=BGR ! "
-            "appsink drop=1 sync=false"
-        )
-
-        camera = CameraBuffer(gst)
-
-        w = int(camera.cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-        h = int(camera.cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        scale_f = 1
+        w = 640*scale_f
+        h = 480*scale_f
         w_ratio, h_ratio = w / 640, h / 640
+
+        camera = CameraBuffer()
+        camera.cap.set(cv2.CAP_PROP_FPS, 60)
+        camera.cap.set(cv2.CAP_PROP_FRAME_WIDTH, w/scale_f)
+        camera.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, h/scale_f)
+        camera.thread.start()
+
         print(f"{'[INFO][TRT_INF:__run_web_camera]':.<40}: Camera resolution: {w}x{h}")
         print(f"{'[INFO][TRT_INF:__run_web_camera]':.<40}: Width ratio: {w_ratio}, Height ratio: {h_ratio}")
-        key = True
-        cnt = 0
-        # fps = 0
-        pre_latency = []
-        inf_latency = []
-        post_latency = []
-        for i in range(200):
-            print(f"{'[INFO][TRT_INF:__run_web_camera]':.<40}: Frame: {i}")
-            start = time.time()
+
+        fpss = deque(maxlen=50)
+        pre_op_latency = deque(maxlen=50)
+        inf_op_latency = deque(maxlen=50)
+        post_op_latency = deque(maxlen=50)
+        fps = 1
+        pre_latency = 1
+        inf_latency = 1
+        post_latency = 1
+        while True:
+            start = time.perf_counter()
+
+            fpss.append(fps)
+            pre_op_latency.append(pre_latency)
+            inf_op_latency.append(inf_latency)
+            post_op_latency.append(post_latency)
+
+            pre_start = time.perf_counter()
             img = camera.get()
             if img is None:
-                print(f"{'[ERROR][TRT_INF:__run_web_camera]':.<40}: Failed to read image")
                 continue
+            # img2 = cv2.resize(img, (w, h))
             data = self.__preprocess(img)
-            pre_latency.append(time.time() - start)
-            start = time.time()
+            pre_end = time.perf_counter()
+
+            inf_start = time.perf_counter()
             self.__inference(data)
-            inf_latency.append(time.time() - start)
-            start = time.time()
+            inf_end = time.perf_counter()
+
+            post_start = time.perf_counter()
             bboxes, _classes = self.__postprocess(img, w_ratio, h_ratio)
+            cv2.putText(img, f"FPS: {int(sum(fpss)/len(fpss))}", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
+            cv2.putText(img, f"PreOPLat: {(sum(pre_op_latency)/len(pre_op_latency)):.3f}", (10, 50), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
+            cv2.putText(img, f"InfOPLat: {(sum(inf_op_latency)/len(inf_op_latency)):.3f}", (10, 70), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
+            cv2.putText(img, f"PostOPLat: {(sum(post_op_latency)/len(post_op_latency)):.3f}", (10, 90), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
+            
             for i, box in enumerate(bboxes):
                 x1, y1, x2, y2 = box
-                # print(f"{'[INFO][TRT_INF:__run_web_camera]':.<40}: {i}: {box}, {_classes[i]}")
+
                 cv2.rectangle(img, (x1, y1), (x2, y2), classes[_classes[i]][1], 2)
                 if _classes[i] in [3, 4]:
                     cv2.putText(img, classes[_classes[i]][0], (int(x1+(x2-x1)/2), int(y1-40)), cv2.FONT_HERSHEY_SIMPLEX, 0.8, classes[_classes[i]][1], 2)
                     continue
                 cv2.putText(img, classes[_classes[i]][0], (x1, y1), cv2.FONT_HERSHEY_SIMPLEX, 0.8, classes[_classes[i]][1], 2)
-            # cv2.putText(img, f"")
-            cv2.imshow("Image", img)
-            #fps = 1 / (end - start)
-
-            key = cv2.waitKey(1)
-            if key & 0xFF == ord('q'):
-                cv2.imwrite(f"output_{cnt}.jpg", img)
-                cnt += 1
-                print(f"{'[INFO][TRT_INF:__run_web_camera]':.<40}: Image saved as output.jpg")
-                # break
-            post_latency.append(time.time() - start)
-        camera.cap.release()
-        cv2.destroyAllWindows()
-        print(f"{'[INFO][TRT_INF:__run_web_camera]':.<40}: Preprocess latency: {numpy.mean(pre_latency)}")
-        print(f"{'[INFO][TRT_INF:__run_web_camera]':.<40}: Inference latency: {numpy.mean(inf_latency)}")
-        print(f"{'[INFO][TRT_INF:__run_web_camera]':.<40}: Postprocess latency: {numpy.mean(post_latency)}")
-        print(f"{'[INFO][TRT_INF:__run_web_camera]':.<40}: INF_FPS: {len(inf_latency) / sum(inf_latency)}")
-        print(f"{'[INFO][TRT_INF:__run_web_camera]':.<40}: PRE_FPS: {len(pre_latency) / sum(pre_latency)}")
-        print(f"{'[INFO][TRT_INF:__run_web_camera]':.<40}: POST_FPS: {len(post_latency) / sum(post_latency)}")
-        # print(f"{'[INFO][TRT_INF:__run_web_camera]':.<40}: FPS: {fps}")
-
-    def __run_realsense(self):
-        pipeline = rs.pipeline()
-        config = rs.config()
-        config.enable_stream(rs.stream.color, 640, 640, rs.format.bgr8, 30)
-        pipeline.start(config)
-
-        while True:
-            frames = pipeline.wait_for_frames()
-            color_frame = frames.get_color_frame()
-            if not color_frame: continue
-            img = numpy.asanyarray(color_frame.get_data())
-            data = self.__preprocess(img)
-            self.__inference(data)
-            bboxes, classes = self.__postprocess(img)
-
-            for i, box in enumerate(bboxes):
-                x1, y1, x2, y2 = box
-                cv2.rectangle(img, (x1, y1), (x2, y2), (0, 0, 255), 2)
-                cv2.putText(img, classes[classes[i]], (x1, y1), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 0, 0), 2)
             cv2.imshow("Image", img)
             key = cv2.waitKey(1)
             if key & 0xFF == ord('q'):
                 break
-        pipeline.stop()
-        cv2.destroyAllWindows()
-    
-    def __draw_boxes(self, img: numpy.ndarray, boxes: list, class_ids: list = None):
-        print(f"{'[INFO][TRT_INF:__draw_boxes]':.<40}: num boxes: {len(boxes)}")
-        for i, box in enumerate(boxes):
-            x1, y1, x2, y2 = box
-            # print(f"{'[INFO][TRT_INF:__run_web_camera]':.<40}: {i}: {box}, {_classes[i]}")
-            cv2.rectangle(img, (x1, y1), (x2, y2), (0, 255, 0), 2)
-            if class_ids[i] in [3,4]:
-                cv2.putText(img, classes[class_ids[i]], (int(x1+(x2-x1)/2), int(y1-40)), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 255), 2)
-                continue
-            cv2.putText(img, classes[class_ids[i]], (x1, y1), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 0, 0), 2)
-        cv2.imwrite("output.jpg", img)
-        cv2.imshow("Image", img)
-        cv2.waitKey(0)
+
+            pre_latency = (pre_end - pre_start)*1000
+            inf_latency = (inf_end - inf_start)*1000
+            post_end = time.perf_counter()
+            post_latency = (post_end - post_start)*1000
+            fps = 1 / (time.perf_counter() - start)
+            
+        camera.running = False
+        camera.thread.join()
+        camera.cap.release()
         cv2.destroyAllWindows()
         
 

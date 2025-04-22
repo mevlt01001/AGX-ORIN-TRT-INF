@@ -1,6 +1,15 @@
 import tensorrt, os
 
-MODEL_PATH = "resources_s/yolov9_s_wholebody25_post_0100_1x3x640x640.onnx"
+
+onnx_files = {
+    "resources_s/yolov9_s_wholebody25_post_0100_1x3x544x960.onnx": (1, 3, 544, 960),
+    "resources_s/yolov9_s_wholebody25_post_0100_1x3x544x1280.onnx": (1, 3, 544, 1280),
+    "resources_s/yolov9_s_wholebody25_post_0100_1x3x576x1024.onnx": (1, 3, 576, 1024),
+    "resources_s/yolov9_s_wholebody25_post_0100_1x3x640x640.onnx": (1, 3, 640, 640),
+    "resources_s/yolov9_s_wholebody25_post_0100_1x3x736x1280.onnx": (1, 3, 736, 1280),
+}
+
+MODEL_PATH = "resources_s/yolov9_s_wholebody25_post_0100_1x3x736x1280.onnx"
 os.makedirs("EngineFolder", exist_ok=True)
 MODEL_NAME = MODEL_PATH.lstrip("resources_s/")
 MODEL_NAME = MODEL_NAME.replace(".onnx", ".engine")
@@ -19,7 +28,7 @@ with open(MODEL_PATH, "rb") as model:
         exit(1)
 
 PROFILE = BUILDER.create_optimization_profile()
-PROFILE.set_shape(NETWORK.get_input(0).name, (1, 3, 720, 1280), (1, 3, 720, 1280), (1, 3, 720, 1280))
+PROFILE.set_shape(NETWORK.get_input(0).name, (1, 3, 'H', 'W'), (1, 3, 'H', 'W'), (1, 3, 'H', 'W'))
 
 CONFIG = BUILDER.create_builder_config()
 CONFIG.profiling_verbosity = tensorrt.ProfilingVerbosity.DETAILED
