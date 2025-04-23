@@ -18,12 +18,12 @@ class buffer:
         return f"Buffer(name={self.name}, dtype={self.dtype}, shape={self.shape})"
 
 class TRTInfer:
-    def __init__(self, engine_path:os.PathLike, input_shape:tuple, output_shape:tuple):
+    def __init__(self, engine_path:os.PathLike, input_shape:tuple=None, output_shape:tuple=None):
         self.engine_path = engine_path
         self.LOGGER = tensorrt.Logger(tensorrt.Logger.VERBOSE)
         self.BUILDER = tensorrt.Builder(self.LOGGER)
         self.CONFIG = self.BUILDER.create_builder_config()
-        self.NETWORK = self.BUILDER.create_network(1 << int(1))
+        self.NETWORK = self.BUILDER.create_network(1 << int(tensorrt.NetworkDefinitionCreationFlag.EXPLICIT_BATCH))
         self.PARSER = tensorrt.OnnxParser(self.NETWORK, self.LOGGER)
         self.ENGINE = None
     
@@ -55,34 +55,37 @@ class TRTInfer:
             f.write(self.ENGINE)
         print(f"{'[SUCCESS][ENGINE]':.<40}: The engine is saved to {self.engine_path}")
         
-    def load_engine(self, engine_path:os.PathLike):
-        assert os.path.exists(engine_path), f"Engine file {engine_path} does not exist"
-        with open(engine_path, "rb") as f:
+    def load_engine(self, output_shape:tuple=None):
+        assert os.path.exists(self.engine_path), f"Engine file {self.engine_path} does not exist"
+        with open(self.engine_path, "rb") as f:
             ENGINE = f.read()
         self.RUNTIME = tensorrt.Runtime(self.LOGGER)
         self.ENGINE = self.RUNTIME.deserialize_cuda_engine(ENGINE)
         if self.ENGINE is None:
             print(f"{'[ERROR][ENGINE]':.<40}: The engine is empty")
             exit(1)
-        print(f"{'[SUCCESS][ENGINE]':.<40}: The engine is loaded from {engine_path}")
+        print(f"{'[SUCCESS][ENGINE]':.<40}: The engine is loaded from {self.engine_path}")
+        self.allocate_buffers(output_shape)
+        self.create_context()
+        print(f"{'[SUCCESS][ENGINE]':.<40}: The engine is created")
 
-    def allocate_buffers(self):
+    def allocate_buffers(self, output_shape:tuple=None):
         self.input_buffers = []
         self.output_buffers = []
 
         for i in range(self.ENGINE.num_io_tensors):
             name = self.ENGINE.get_tensor_name(i)
-            shape = self.ENGINE.get_tensor_shape(name)
+            shape = self.ENGINE.get_tensor_shape(name) if self.ENGINE.get_tensor_mode(name) == tensorrt.TensorIOMode.INPUT else output_shape
             dtype = self.ENGINE.get_tensor_dtype(name)
             dtype = tensorrt.nptype(dtype)
             mode = self.ENGINE.get_tensor_mode(name)
             dummy = np.zeros(shape, dtype=dtype)
             
             info = f"""
-            {name}:
-                shape: {shape}
-                dtype: {dtype}
-                mode: {mode}
+                    name: {name}:
+                    shape: {shape}
+                    dtype: {dtype}
+                    mode: {mode}
             """
             print(f"{'[INFO][BUFFER]':.<40}: {info}")
 
@@ -102,20 +105,22 @@ class TRTInfer:
             exit(1)
         print(f"{'[SUCCESS][CONTEXT]':.<40}: The engine.context is created")
         for buffer in self.input_buffers:
-            self.context.set_input_shape(buffer.name, buffer.shape)
+            self.context.set_tensor_address(buffer.name, buffer.device)
             print(f"{'[INFO][CONTEXT]':.<40}: input buffer {buffer.name}({buffer.shape}) bindend to Context")
         for buffer in self.output_buffers:
-            self.context.set_output_shape(buffer.name, buffer.shape)
+            self.context.set_tensor_address(buffer.name, buffer.device)
             print(f"{'[INFO][CONTEXT]':.<40}: output buffer {buffer.name}({buffer.shape}) bindend to Context")
         self.stream = cuda.Stream()
         print(f"{'[SUCCESS][CONTEXT]':.<40}: cuda.Stream is created")
     
     def bind(self, input_data:np.ndarray):
-        assert input_data.shape == self.input_buffers[0].shape, f"Input data shape {input_data.shape} does not match buffer shape {self.input_buffers[0].shape}"
-        np.copyto(self.input_buffers[0].host, input_data.ravel())
+
         cuda.memcpy_htod_async(self.input_buffers[0].device, self.input_buffers[0].host, self.stream)
         self.context.execute_async_v3(self.stream.handle)
         cuda.memcpy_dtoh_async(self.output_buffers[0].host, self.output_buffers[0].device, self.stream)
         cuda.memset_d32_async(self.output_buffers[0].device, 0, self.output_buffers[0].size, self.stream)
+        self.stream.synchronize()
+
+        
     
         

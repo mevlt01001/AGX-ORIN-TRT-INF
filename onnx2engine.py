@@ -1,6 +1,6 @@
 import tensorrt, os
-from sog4onnx import generate
-MODEL_PATH = "resources_s/resources_e_withpost/yolov9_e_wholebody28_refine_post_0100_1x3x544x1280.onnx"
+
+MODEL_PATH = "resources_s/yolov9_s_wholebody28_refine_post_0100_1x3x736x1280.onnx"
 os.makedirs("EngineFolder", exist_ok=True)
 MODEL_NAME = MODEL_PATH.lstrip("resources_s/")
 MODEL_NAME = MODEL_NAME.replace(".onnx", ".engine")

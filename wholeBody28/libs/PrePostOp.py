@@ -1,7 +1,7 @@
 import numpy as np
 
 
-class Postprocess:
+class PrePostOP:
     def __init__(self):
 
         self.classes = {
@@ -35,8 +35,14 @@ class Postprocess:
             27: ('Foot', (23,45,190))
         }
 
-    def postprocess(self, output: np.ndarray, score_threshold: int=0.35):
+    def preprocess(self, image: np.ndarray, copyto=None):
+        data = image.transpose((2, 0, 1))
+        data = np.expand_dims(data, axis=0)
+        np.copyto(copyto, data)
+
+    def postprocess(self, output: np.ndarray, w_ratio, h_ratio, score_threshold: int=0.35):
         # outputshape is [?,7](batchno, class_id, score, x1,y1,x2,y2)
+
         output = output[output[..., 2] >= score_threshold]
         output = output[np.isin(output[..., 1], list(self.classes.keys()))]
         
@@ -44,9 +50,14 @@ class Postprocess:
 
         for row in output:
             bbox = row[3:].astype(np.int32)
+            bbox[0] = int(bbox[0] * w_ratio)
+            bbox[1] = int(bbox[1] * h_ratio)
+            bbox[2] = int(bbox[2] * w_ratio)
+            bbox[3] = int(bbox[3] * h_ratio)
             class_name = self.classes[row[1]][0]
+            class_id = int(row[1])
             color = self.classes[row[1]][1]
-            results.append([class_name, color, bbox])
+            results.append([class_name, class_id, color, bbox])
 
         return results
 
