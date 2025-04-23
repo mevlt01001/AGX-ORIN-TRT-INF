@@ -1,15 +1,6 @@
 import tensorrt, os
-
-
-onnx_files = {
-    "resources_s/yolov9_s_wholebody25_post_0100_1x3x544x960.onnx": (1, 3, 544, 960),
-    "resources_s/yolov9_s_wholebody25_post_0100_1x3x544x1280.onnx": (1, 3, 544, 1280),
-    "resources_s/yolov9_s_wholebody25_post_0100_1x3x576x1024.onnx": (1, 3, 576, 1024),
-    "resources_s/yolov9_s_wholebody25_post_0100_1x3x640x640.onnx": (1, 3, 640, 640),
-    "resources_s/yolov9_s_wholebody25_post_0100_1x3x736x1280.onnx": (1, 3, 736, 1280),
-}
-
-MODEL_PATH = "resources_s/yolov9_s_wholebody25_post_0100_1x3x736x1280.onnx"
+from sog4onnx import generate
+MODEL_PATH = "resources_s/resources_e_withpost/yolov9_e_wholebody28_refine_post_0100_1x3x544x1280.onnx"
 os.makedirs("EngineFolder", exist_ok=True)
 MODEL_NAME = MODEL_PATH.lstrip("resources_s/")
 MODEL_NAME = MODEL_NAME.replace(".onnx", ".engine")
@@ -24,7 +15,8 @@ PARSER = tensorrt.OnnxParser(NETWORK, LOGGER)
 # Load the ONNX model
 with open(MODEL_PATH, "rb") as model:
     if not PARSER.parse(model.read()):
-        print(f"{'[ERROR][ONNX_PARSER]':.<40}: {PARSER.get_error(0)}")
+        for i in range(PARSER.num_errors):
+            print(PARSER.get_error(i))
         exit(1)
 
 PROFILE = BUILDER.create_optimization_profile()
@@ -46,3 +38,4 @@ print(f"{'[SUCCESS][ENGINE]':.<40}: The engine is created")
 # Save the engine to a file
 with open(ENGINE_PATH, "wb") as f:
     f.write(ENGINE)
+print(f"{'[SUCCESS][ENGINE]':.<40}: The engine is saved to {ENGINE_PATH}")
